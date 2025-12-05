@@ -1,0 +1,86 @@
+name: Daily Report & Publish
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC — change as needed
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install deps (including matplotlib)
+        run: pip install requests feedparser yfinance pandas matplotlib
+
+      - name: Generate report
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          python report_generator.py
+          ls -la reports || true
+
+      - name: Prepare gh-pages branch and copy reports
+        run: |
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Create or switch to gh-pages branch
+          if git show-ref --verify --quiet refs/heads/gh-pages; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . || true
+          fi
+
+          # Ensure reports folder exists in working tree
+          mkdir -p reports
+          git checkout main -- reports || true
+
+          # Add and commit the reports
+          git add reports
+          git commit -m "daily report: $(date -u +"%Y-%m-%d")" || true
+          git push origin gh-pages
+
+      - name: Send Telegram links to subscribers
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_FULL: ${{ github.repository }}
+        run: |
+          DATE=$(date -u +"%Y%m%d")
+          FILE="report_${DATE}.html"
+          REPO_ONLY=${REPO_FULL#*/}   # owner/repo -> repo
+          URL="https://${REPO_OWNER}.github.io/${REPO_ONLY}/reports/${FILE}"
+          echo "Report URL: $URL"
+
+          python - <<PY
+import json,os,requests
+token=os.environ.get("TELEGRAM_TOKEN")
+url = os.environ.get("URL", "$URL")
+# read subscribers
+try:
+    with open("tg_state.json","r") as f:
+        s=json.load(f)
+except:
+    s={"subscribers":[]}
+subs = s.get("subscribers",[])
+for c in subs:
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":c,"text":f"Daily report: {url}"}, timeout=20)
+    except Exception as e:
+        print("notify err", e)
+PY
