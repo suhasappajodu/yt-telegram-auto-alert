@@ -1,97 +1,34 @@
-name: Telegram YouTube + Daily Report
+name: Telegram Commands (10min)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # commands & quick checks (every 10 min)
-    - cron: "0 3 * * *"      # daily report at 03:00 UTC - change to your preferred UTC time
+    - cron: "*/10 * * * *"   # every 10 minutes
   workflow_dispatch:
 
 jobs:
   commands:
-    name: Command & quick-check job
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
+
       - name: Install deps
         run: pip install requests feedparser yfinance pandas
+
       - name: Run command processor
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         run: python main.py
+
       - name: Save state
         run: |
-          git config --local user.email "actions@github.com"
+          git config --local user.email "action@github.com"
           git config --local user.name "GitHub Actions"
           git add channels.json yt_state.json tg_state.json portfolio.json || true
           git commit -m "state update" || true
           git push || true
-
-  daily_report:
-    name: Daily Report -> publish and notify
-    runs-on: ubuntu-latest
-    needs: commands
-    if: contains(github.event.schedule && github.event.schedule, '0 3 * * *')
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          persist-credentials: true
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
-      - name: Install deps (with matplotlib)
-        run: pip install requests feedparser yfinance pandas matplotlib
-      - name: Generate report
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          python report_generator.py
-          echo "REPORT_PATH created"
-      - name: Prepare gh-pages branch
-        run: |
-          # create gh-pages branch if not present, copy reports, commit & push
-          git fetch origin gh-pages || true
-          if git show-ref --quiet refs/heads/gh-pages; then
-            git checkout gh-pages
-          else
-            git checkout --orphan gh-pages
-            git rm -rf . || true
-          fi
-          mkdir -p reports
-          git checkout main -- reports || true
-          git add reports
-          git commit -m "daily report" || true
-          git push origin gh-pages --force
-      - name: Send Telegram links
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.repository }}
-        run: |
-          # Build link(s)
-          DATE=$(date -u +"%Y%m%d")
-          FILE="report_${DATE}.html"
-          # public URL for GitHub Pages
-          OWNER=${REPO_OWNER}
-          REPO_FULL=${REPO_NAME}
-          REPO_ONLY=${REPO_FULL#*/}  # owner/repo -> repo
-          URL="https://${OWNER}.github.io/${REPO_ONLY}/reports/${FILE}"
-          echo "Report URL: $URL"
-          # notify subscribers by reading tg_state.json
-          python - <<PY
-import json,os,requests
-token=os.environ.get("TELEGRAM_TOKEN")
-url_base=os.environ.get("URL","")
-with open("tg_state.json","r") as f:
-    s=json.load(f)
-subs=s.get("subscribers",[])
-for c in subs:
-    try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":c,"text":f"Daily report: {URL}"})
-    except Exception as e:
-        print("err",e)
-PY
